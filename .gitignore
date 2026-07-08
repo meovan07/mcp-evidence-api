@@ -1,0 +1,4 @@
+node_modules
+dist
+.evidence
+.DS_Store
