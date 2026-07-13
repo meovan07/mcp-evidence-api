@@ -2,3 +2,5 @@ node_modules
 dist
 .evidence
 .DS_Store
+.env
+.env.local

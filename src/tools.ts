@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { waitForEmail } from "./mail.js";
 import type { SessionManager } from "./sessions.js";
 
 function text(message: string) {
@@ -73,6 +74,35 @@ export function registerTools(server: McpServer, sessions: SessionManager): void
         `Finished evidence session. Evidence saved to: ${evidenceDir}\n` +
           `Requests: ${requestCount}, failures (non-2xx): ${failureCount}` +
           (failureCount > 0 ? " (see requests.json for details)" : ""),
+      );
+    },
+  );
+
+  server.registerTool(
+    "wait_for_email",
+    {
+      title: "Wait for email",
+      description:
+        "Polls an IMAP inbox for a new email matching the given filters (arrived after this call started, " +
+        "so it never picks up a stale message from a previous run), and returns it. If `pattern` (a regex, " +
+        "e.g. an OTP code like `\\\\d{6}`) is given, returns the first match from the body as `matchedText` " +
+        "instead of the full email. Requires IMAP_USER and IMAP_APP_PASSWORD to be set as environment " +
+        "variables on this MCP server (IMAP_HOST optional, defaults to imap.gmail.com).",
+      inputSchema: {
+        from: z.string().optional().describe("Only match emails from this sender (substring match)"),
+        subjectContains: z.string().optional().describe("Only match emails whose subject contains this text"),
+        pattern: z.string().optional().describe("Regex to extract from the email body, e.g. a 6-digit OTP code"),
+        timeoutMs: z.number().optional().describe("Max time to wait, in milliseconds (default 30000)"),
+        pollIntervalMs: z.number().optional().describe("How often to re-check the inbox, in milliseconds (default 2000)"),
+      },
+    },
+    async ({ from, subjectContains, pattern, timeoutMs, pollIntervalMs }) => {
+      const match = await waitForEmail({ from, subjectContains, pattern, timeoutMs, pollIntervalMs });
+      if (match.matchedText) {
+        return text(`Matched: ${match.matchedText}\n(from email "${match.subject}" sent by ${match.from})`);
+      }
+      return text(
+        `Email received.\nFrom: ${match.from}\nSubject: ${match.subject}\nDate: ${match.date}\n\n${match.bodyText ?? ""}`,
       );
     },
   );
