@@ -45,7 +45,8 @@ Consuming projects should add `.evidence/` to their own `.gitignore`.
 |---|---|
 | `start_evidence_session({ featureName, baseUrl? })` | Creates the evidence dir. Returns `sessionId`. |
 | `request({ sessionId, name?, method, url, headers?, body? })` | Makes an HTTP request, logs the full request/response pair. `url` resolves against `baseUrl` if relative. |
-| `finish_evidence_session({ sessionId, summary? })` | Writes `requests.json` and `manifest.json`, returns request/failure counts. |
+| `query({ sessionId, name?, sql, params? })` | Runs a read-only SQL query against Postgres and logs it — see below. |
+| `finish_evidence_session({ sessionId, summary? })` | Writes `requests.json`, `queries.json`, and `manifest.json`, returns request/failure/query counts. |
 | `wait_for_email({ from?, subjectContains?, pattern?, timeoutMs?, pollIntervalMs? })` | Polls an IMAP inbox for a new email (e.g. an OTP/verification code) and returns it — see below. Independent of the evidence-session tools above; doesn't write anything to `.evidence/`. |
 
 A session left open for 10 minutes with no tool calls is auto-finished. The
@@ -82,6 +83,41 @@ Resulting evidence directory:
 `requests.json` is an array of full request/response records (method, url,
 headers, body, status, timing). `manifest.json` is a summary: request count
 and how many came back non-2xx.
+
+### `query` (database verification)
+
+An API response can claim an action succeeded without the database actually
+reflecting it correctly (soft-deletes, audit fields, related-table writes).
+`query` lets you check the real state directly — currently Postgres only.
+
+**Setup**: set `DATABASE_URL` as an environment variable on the MCP server
+registration, same pattern as the IMAP credentials — run this yourself,
+don't have an agent run it or inspect it afterward:
+
+```bash
+claude mcp add --scope user evidence-api \
+  -e DATABASE_URL=postgres://user:password@host:5432/dbname \
+  -- npx -y github:meovan07/mcp-evidence-api
+```
+
+**Read-only, enforced twice**: input is rejected unless it's a single
+`SELECT`/`WITH ... SELECT` statement (no semicolon-separated multi-statement
+tricks), *and* every query runs inside a database-level read-only
+transaction (`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`), so a
+write hidden inside something like a CTE — which could slip past the input
+check — still gets rejected by Postgres itself. Validated directly: a
+`WITH deleted AS (DELETE ... RETURNING *) SELECT * FROM deleted` attempt was
+rejected with `cannot execute SELECT in a read-only transaction`, and the row
+was confirmed still present afterward.
+
+```
+query({ sessionId, name: "confirm signup row", sql: "SELECT * FROM users WHERE email = $1", params: ["ada@example.com"] })
+  -> "1 row(s) (2ms)\n[{\"id\":1,\"email\":\"ada@example.com\",...}]"
+```
+
+Results over 50 rows are truncated in the evidence file (the tool's response
+still reports the true `rowCount`); string cell values over 2000 characters
+are truncated too.
 
 ### `wait_for_email` (OTP / verification-code retrieval)
 

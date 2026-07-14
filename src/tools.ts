@@ -57,22 +57,52 @@ export function registerTools(server: McpServer, sessions: SessionManager): void
   );
 
   server.registerTool(
+    "query",
+    {
+      title: "Query",
+      description:
+        "Runs a read-only SQL query against the configured Postgres database and logs it (sql, params, " +
+        "rows, timing) as evidence. Only a single SELECT (or WITH ... SELECT) statement is allowed — this is " +
+        "enforced both by rejecting non-SELECT input and by running the query in a database-level read-only " +
+        "transaction, so writes are rejected by Postgres itself even if they slip past the input check. " +
+        "Requires DATABASE_URL to be set as an environment variable on this MCP server. Use this to verify " +
+        "actual database state after an action (e.g. confirming a signup created the expected row), not just " +
+        "what an API response claims happened.",
+      inputSchema: {
+        sessionId: z.string(),
+        name: z.string().optional().describe("Short label for this query, for readability in the evidence file"),
+        sql: z.string().min(1),
+        params: z.array(z.unknown()).optional().describe("Positional parameters for $1, $2, ... placeholders"),
+      },
+    },
+    async ({ sessionId, name, sql, params }) => {
+      const record = await sessions.query(sessionId, { name, sql, params });
+      const preview = JSON.stringify(record.rows.slice(0, 5));
+      return text(
+        `${record.rowCount} row(s) (${record.durationMs}ms)${record.truncated ? " [result truncated to 50 rows in evidence file]" : ""}\n` +
+          preview,
+      );
+    },
+  );
+
+  server.registerTool(
     "finish_evidence_session",
     {
       title: "Finish evidence session",
       description:
-        "Writes requests.json (all request/response pairs) and manifest.json (summary + failure count), " +
-        "and returns the evidence folder path. Always call this at the end of a verification run.",
+        "Writes requests.json (all request/response pairs), queries.json (all SQL queries run), and " +
+        "manifest.json (summary + failure count), and returns the evidence folder path. Always call this at " +
+        "the end of a verification run.",
       inputSchema: {
         sessionId: z.string(),
         summary: z.string().optional().describe("Short human-readable summary of what was verified"),
       },
     },
     async ({ sessionId, summary }) => {
-      const { evidenceDir, requestCount, failureCount } = await sessions.finish(sessionId, summary);
+      const { evidenceDir, requestCount, failureCount, queryCount } = await sessions.finish(sessionId, summary);
       return text(
         `Finished evidence session. Evidence saved to: ${evidenceDir}\n` +
-          `Requests: ${requestCount}, failures (non-2xx): ${failureCount}` +
+          `Requests: ${requestCount}, failures (non-2xx): ${failureCount}, queries: ${queryCount}` +
           (failureCount > 0 ? " (see requests.json for details)" : ""),
       );
     },

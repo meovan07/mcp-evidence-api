@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { runQuery } from "./db.js";
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL_MS = 60 * 1000;
@@ -31,6 +32,17 @@ export interface RequestRecord {
   timestamp: string;
 }
 
+export interface QueryRecord {
+  name?: string;
+  sql: string;
+  params?: unknown[];
+  rows: Record<string, unknown>[];
+  rowCount: number;
+  truncated: boolean;
+  durationMs: number;
+  timestamp: string;
+}
+
 interface EvidenceSession {
   id: string;
   featureName: string;
@@ -39,6 +51,7 @@ interface EvidenceSession {
   startedAt: string;
   lastActivity: number;
   requests: RequestRecord[];
+  queries: QueryRecord[];
 }
 
 function sanitize(name: string): string {
@@ -104,8 +117,26 @@ export class SessionManager {
       startedAt: new Date().toISOString(),
       lastActivity: Date.now(),
       requests: [],
+      queries: [],
     });
     return { sessionId: id, evidenceDir };
+  }
+
+  async query(sessionId: string, args: { name?: string; sql: string; params?: unknown[] }): Promise<QueryRecord> {
+    const session = this.get(sessionId);
+    const result = await runQuery(args.sql, args.params);
+    const record: QueryRecord = {
+      name: args.name,
+      sql: args.sql,
+      params: args.params,
+      rows: result.rows,
+      rowCount: result.rowCount,
+      truncated: result.truncated,
+      durationMs: result.durationMs,
+      timestamp: new Date().toISOString(),
+    };
+    session.queries.push(record);
+    return record;
   }
 
   async request(
@@ -159,7 +190,7 @@ export class SessionManager {
   async finish(
     sessionId: string,
     summary?: string,
-  ): Promise<{ evidenceDir: string; requestCount: number; failureCount: number }> {
+  ): Promise<{ evidenceDir: string; requestCount: number; failureCount: number; queryCount: number }> {
     const session = this.get(sessionId);
     return this.finalize(session, summary, "finished");
   }
@@ -168,7 +199,7 @@ export class SessionManager {
     session: EvidenceSession,
     summary: string | undefined,
     reason: "finished" | "idle-timeout" | "shutdown",
-  ): Promise<{ evidenceDir: string; requestCount: number; failureCount: number }> {
+  ): Promise<{ evidenceDir: string; requestCount: number; failureCount: number; queryCount: number }> {
     this.sessions.delete(session.id);
 
     const failureCount = session.requests.filter((r) => !r.ok).length;
@@ -177,6 +208,7 @@ export class SessionManager {
       path.join(session.evidenceDir, "requests.json"),
       JSON.stringify(session.requests, null, 2),
     );
+    await writeFile(path.join(session.evidenceDir, "queries.json"), JSON.stringify(session.queries, null, 2));
 
     const manifest = {
       featureName: session.featureName,
@@ -188,10 +220,17 @@ export class SessionManager {
       requestCount: session.requests.length,
       failureCount,
       requestsFile: "requests.json",
+      queryCount: session.queries.length,
+      queriesFile: "queries.json",
     };
     await writeFile(path.join(session.evidenceDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 
-    return { evidenceDir: session.evidenceDir, requestCount: session.requests.length, failureCount };
+    return {
+      evidenceDir: session.evidenceDir,
+      requestCount: session.requests.length,
+      failureCount,
+      queryCount: session.queries.length,
+    };
   }
 
   private async reapIdleSessions(): Promise<void> {
